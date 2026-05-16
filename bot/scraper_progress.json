@@ -1,0 +1,19 @@
+{
+  "status": "error",
+  "source": "-1003745613477",
+  "mode": "detecting…",
+  "processed": 0,
+  "forwarded": 0,
+  "skipped": 0,
+  "errors": 0,
+  "current_message": null,
+  "current_topic": null,
+  "topics_done": 0,
+  "topics_total": 0,
+  "started_at": "2026-05-16T06:57:33.471963",
+  "finished_at": "2026-05-16T06:57:39.071351",
+  "log": [
+    "[06:57:39] ERROR: Cannot access '-1003745613477': Telegram says: [400 PEER_ID_INVALID] - The peer id being used is invalid or not known yet. Make sure you meet the peer before interacting with it ",
+    "[06:57:39] Make sure the bot is a member or admin of that chat, or it is a public chat."
+  ]
+}
