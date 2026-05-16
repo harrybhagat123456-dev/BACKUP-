@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Heroku Web Entry Point — Full-Featured Flask Dashboard
-======================================================
-Flask dashboard that works on Heroku with ALL pages:
-Dashboard, Analytics, Topics, Activity Logs, Configuration,
-System Info, Debug Log, Copy History.
-Bot auto-starts in background thread.
+Heroku Web Entry Point - Flask Dashboard for Telegram Backup Bot
+================================================================
+- Single-page dashboard with sidebar navigation
+- Bot auto-starts in background thread
+- Start/Stop/Restart bot from dashboard
+- All 8 pages: Dashboard, Analytics, Topics, Logs, Config, System, Debug, Copy
+- Proper Content-Security-Policy headers (fixes "Dangerous" browser warning)
+- Clean, modern UI inspired by Telegram-Share-Bot dashboard style
 """
 
 import os
@@ -29,108 +31,449 @@ monitor = BotMonitor()
 config_mgr = ConfigManager()
 BOT_START_TIME = datetime.now()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SHARED TEMPLATE PARTS
-# ══════════════════════════════════════════════════════════════════════════════
+# Global reference to the bot process so we can control it directly
+_bot_process = None
+_bot_start_error = ""
+
+
+# ============================================================================
+# SECURITY HEADERS - Fix "Dangerous" browser warning
+# ============================================================================
+
+@app.after_request
+def set_security_headers(response):
+    """Add security headers to fix browser 'Dangerous' warnings."""
+    # Content-Security-Policy allows our inline styles, scripts, and CDN
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' https://cdn.jsdelivr.net; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    # Force HTTPS - tells browsers to always use HTTPS
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    return response
+
+
+# ============================================================================
+# CSS - Clean modern dashboard style
+# ============================================================================
 
 CSS = """
-:root{--bg:#0f0f1a;--card:#1a1a2e;--border:#2a2a4a;--accent:#6c5ce7;--accent2:#a29bfe;--text:#e0e0e0;--green:#40c057;--red:#e03131;--yellow:#fab005;--header-bg:#22223a}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
-.sidebar{width:220px;background:var(--card);border-right:1px solid var(--border);padding:16px 0;position:fixed;top:0;left:0;height:100vh;overflow-y:auto;z-index:10}
-.sidebar h2{color:var(--accent2);font-size:15px;padding:0 16px 12px;border-bottom:1px solid var(--border);margin-bottom:6px}
-.sidebar a{display:block;padding:9px 16px;color:var(--text);text-decoration:none;font-size:13px;border-left:3px solid transparent;transition:.15s}
-.sidebar a:hover{background:rgba(108,92,231,.1)}
-.sidebar a.active{background:rgba(108,92,231,.15);border-left-color:var(--accent);color:var(--accent2);font-weight:600}
-.sidebar .sbox{margin:12px 16px;padding:10px;border-radius:6px;font-size:11px}
-.sidebar .sbox.ok{background:#1b4332;border:1px solid #2d6a4f}
-.sidebar .sbox.err{background:#3c1518;border:1px solid #641220}
-.main{margin-left:220px;flex:1;padding:20px;max-width:1060px}
-h1{font-size:20px;margin-bottom:4px;color:#fff}
-h2{font-size:16px;margin:16px 0 8px;color:var(--accent2)}
-.sub{color:#888;font-size:12px;margin-bottom:16px}
-.banner{padding:12px 16px;border-radius:8px;margin-bottom:14px;display:flex;align-items:center;gap:8px;font-size:13px}
-.banner.ok{background:#1b4332;border:1px solid #2d6a4f}
-.banner.err{background:#3c1518;border:1px solid #641220}
-.banner.warn{background:#3d2e00;border:1px solid #5c4400}
-.banner.info{background:#1a1a4e;border:1px solid #2a2a6e}
-.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.dot.green{background:var(--green);box-shadow:0 0 6px var(--green)}
-.dot.red{background:var(--red)}
-.dot.yellow{background:var(--yellow)}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
-.stat{background:var(--card);padding:16px;border-radius:8px;border:1px solid var(--border);text-align:center}
-.stat .val{font-size:26px;font-weight:700;color:var(--accent)}
-.stat .lbl{font-size:11px;color:#888;margin-top:2px}
-.card{background:var(--card);border-radius:8px;border:1px solid var(--border);margin-bottom:12px;overflow:hidden}
-.card-head{padding:10px 14px;font-weight:600;font-size:13px;background:var(--header-bg);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
-.card-body{padding:14px}
-.row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px}
-.row:last-child{border-bottom:none}
-.row .k{color:#888}
-.row .v{font-family:monospace;font-size:12px}
-.row .v.ok{color:var(--green)}
-.row .v.err{color:var(--red)}
-.row .v.warn{color:var(--yellow)}
-table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;padding:6px 8px;border-bottom:2px solid var(--border);color:#888;font-weight:600;font-size:10px;text-transform:uppercase}
-td{padding:5px 8px;border-bottom:1px solid var(--border)}
-tr:hover td{background:rgba(108,92,231,.04)}
-.btn{padding:7px 14px;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-weight:500;color:#fff;transition:.15s}
-.btn-p{background:var(--accent)}.btn-p:hover{background:#5a4bd1}
-.btn-d{background:var(--red)}.btn-d:hover{background:#c92a2a}
-.btn-s{background:var(--green)}.btn-s:hover{background:#2f9e44}
-.btn-w{background:var(--yellow);color:#000}
-.btns{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
-.fg{margin-bottom:12px}
-.fg label{display:block;font-size:12px;color:#888;margin-bottom:3px}
-.fg input,.fg select{width:100%;padding:7px 10px;border-radius:5px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px}
-.fg input:focus{outline:none;border-color:var(--accent)}
-.fr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.pbar{background:var(--border);border-radius:6px;overflow:hidden;height:20px;position:relative}
-.pbar .fill{background:var(--accent);height:100%;transition:width .3s;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:600;min-width:24px}
-.cc{position:relative;height:240px;margin:8px 0}
-.tip{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin-top:10px;font-size:12px}
-.tip table{margin-top:6px}
-.tip td,.tip th{font-size:11px}
-.msg{padding:8px 12px;border-radius:5px;margin-bottom:10px;font-size:12px}
-.msg.ok{background:#1b4332;border:1px solid #2d6a4f}
-.msg.err{background:#3c1518;border:1px solid #641220}
-.msg.info{background:#1a1a4e;border:1px solid #2a2a6e}
-@media(max-width:768px){.sidebar{width:100%;height:auto;position:relative;display:flex;flex-wrap:wrap;padding:8px}.sidebar h2{display:none}.sidebar a{padding:6px 10px;font-size:11px;border-left:none;border-bottom:2px solid transparent}.sidebar .sbox{display:none}.main{margin-left:0}.stats{grid-template-columns:1fr 1fr}.fr{grid-template-columns:1fr}}
+:root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --accent2: #79c0ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --header-bg: #1c2128;
+    --sidebar-bg: #0d1117;
+    --hover: rgba(88,166,255,0.1);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 240px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    position: fixed;
+    top: 0; left: 0;
+    height: 100vh;
+    overflow-y: auto;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+}
+.sidebar-brand {
+    padding: 20px 16px 16px;
+    border-bottom: 1px solid var(--border);
+}
+.sidebar-brand h1 {
+    font-size: 18px;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.sidebar-brand p {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 4px;
+}
+.sidebar-nav {
+    flex: 1;
+    padding: 8px 0;
+}
+.sidebar-nav a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    color: var(--text2);
+    text-decoration: none;
+    font-size: 14px;
+    border-left: 3px solid transparent;
+    transition: all 0.15s;
+}
+.sidebar-nav a:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+.sidebar-nav a.active {
+    background: var(--hover);
+    border-left-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+}
+.sidebar-nav a .nav-icon {
+    width: 20px;
+    text-align: center;
+    font-size: 16px;
+}
+.sidebar-status {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+}
+.sidebar-status .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+}
+.sidebar-status .status-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.sidebar-status .status-dot.off { background: var(--red); }
+
+/* Main content */
+.main {
+    margin-left: 240px;
+    flex: 1;
+    padding: 24px;
+    max-width: 1100px;
+    min-width: 0;
+}
+
+/* Page header */
+.page-header {
+    margin-bottom: 24px;
+}
+.page-header h1 {
+    font-size: 24px;
+    color: #fff;
+    margin-bottom: 4px;
+}
+.page-header .sub {
+    color: var(--text2);
+    font-size: 14px;
+}
+
+/* Status banner */
+.banner {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+}
+.banner.ok { background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3); }
+.banner.err { background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.3); }
+.banner.warn { background: rgba(210,153,34,0.1); border: 1px solid rgba(210,153,34,0.3); }
+.banner.info { background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.3); }
+.dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.dot.green { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.dot.red { background: var(--red); box-shadow: 0 0 8px var(--red); }
+.dot.yellow { background: var(--yellow); }
+.dot.blue { background: var(--accent); }
+
+/* Stats grid */
+.stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.stat {
+    background: var(--card);
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    text-align: center;
+    transition: border-color 0.15s;
+}
+.stat:hover { border-color: var(--accent); }
+.stat .val {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--accent);
+}
+.stat .lbl {
+    font-size: 12px;
+    color: var(--text2);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Cards */
+.card {
+    background: var(--card);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+.card-head {
+    padding: 12px 16px;
+    font-weight: 600;
+    font-size: 14px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.card-body { padding: 16px; }
+
+/* Rows */
+.row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+.row:last-child { border-bottom: none; }
+.row .k { color: var(--text2); }
+.row .v { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 13px; }
+.row .v.ok { color: var(--green); }
+.row .v.err { color: var(--red); }
+.row .v.warn { color: var(--yellow); }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 2px solid var(--border);
+    color: var(--text2);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: var(--hover); }
+
+/* Buttons */
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 500;
+    color: #fff;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn-p { background: var(--accent); color: #000; }
+.btn-p:hover { background: var(--accent2); }
+.btn-s { background: var(--green); }
+.btn-s:hover { background: #2ea043; }
+.btn-d { background: var(--red); }
+.btn-d:hover { background: #da3633; }
+.btn-w { background: var(--yellow); color: #000; }
+.btn-w:hover { background: #e3b341; }
+.btn-o {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+}
+.btn-o:hover { border-color: var(--accent); color: var(--accent); }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+
+/* Forms */
+.fg { margin-bottom: 14px; }
+.fg label {
+    display: block;
+    font-size: 13px;
+    color: var(--text2);
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+.fg input, .fg select {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    transition: border-color 0.15s;
+}
+.fg input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(88,166,255,0.15); }
+.fr { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* Progress bars */
+.pbar {
+    background: var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    height: 22px;
+    position: relative;
+}
+.pbar .fill {
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    height: 100%;
+    transition: width 0.3s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: #000;
+    font-weight: 600;
+    min-width: 28px;
+}
+
+/* Chart container */
+.cc { position: relative; height: 260px; margin: 8px 0; }
+
+/* Tip box */
+.tip {
+    background: rgba(88,166,255,0.05);
+    border: 1px solid rgba(88,166,255,0.2);
+    border-radius: 8px;
+    padding: 14px;
+    margin-top: 12px;
+    font-size: 13px;
+}
+.tip table { margin-top: 8px; }
+.tip td, .tip th { font-size: 12px; }
+
+/* Messages */
+.msg {
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    font-size: 13px;
+}
+.msg.ok { background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3); }
+.msg.err { background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.3); }
+.msg.info { background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.3); }
+
+/* Two-column grid */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+    .sidebar {
+        width: 100%; height: auto; position: relative;
+        display: flex; flex-wrap: wrap; padding: 8px;
+    }
+    .sidebar-brand { display: none; }
+    .sidebar-nav { display: flex; flex-wrap: wrap; padding: 0; }
+    .sidebar-nav a { padding: 8px 12px; font-size: 12px; border-left: none; border-bottom: 2px solid transparent; }
+    .sidebar-status { display: none; }
+    .main { margin-left: 0; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .fr, .grid2 { grid-template-columns: 1fr; }
+}
 """
 
 
+# ============================================================================
+# NAVIGATION
+# ============================================================================
+
 def nav_html(page, bot_running, config_ok):
     pages = [
-        ('dashboard', 'Dashboard'),
-        ('analytics', 'Analytics'),
-        ('topics', 'Topics'),
-        ('logs', 'Logs'),
-        ('config', 'Config'),
-        ('system', 'System'),
-        ('debug', 'Debug'),
-        ('copy', 'Copy'),
+        ('dashboard', 'Dashboard', '&#9776;'),
+        ('analytics', 'Analytics', '&#128200;'),
+        ('topics', 'Topics', '&#128193;'),
+        ('logs', 'Activity Logs', '&#128203;'),
+        ('config', 'Config', '&#9881;'),
+        ('system', 'System', '&#128187;'),
+        ('debug', 'Debug', '&#128270;'),
+        ('copy', 'Copy History', '&#128228;'),
     ]
     links = ''
-    for p, l in pages:
+    for p, l, icon in pages:
         cls = ' class="active"' if page == p else ''
-        links += '<a href="/{0}"{1}>{2}</a>'.format(p, cls, l)
-    sbox_cls = 'ok' if bot_running else 'err'
-    sbox_txt = 'Running' if bot_running else 'Stopped'
-    cfg_txt = 'OK' if config_ok else '!'
-    return '<nav class="sidebar"><h2>TGBackup</h2>{0}<div class="sbox {1}">Bot: {2}<br><span style="font-size:10px;color:#888;">Config: {3}</span></div></nav>'.format(links, sbox_cls, sbox_txt, cfg_txt)
+        links += '<a href="/{0}"{1}><span class="nav-icon">{2}</span>{3}</a>'.format(p, cls, icon, l)
+    sdot_cls = 'on' if bot_running else 'off'
+    sdot_txt = 'Bot Running' if bot_running else 'Bot Stopped'
+    cfg_txt = 'Config OK' if config_ok else 'Config Incomplete'
+
+    return (
+        '<nav class="sidebar">'
+        '<div class="sidebar-brand"><h1>TGBackup</h1><p>Telegram Media Backup Bot</p></div>'
+        '<div class="sidebar-nav">{0}</div>'
+        '<div class="sidebar-status">'
+        '<span class="status-dot {1}"></span>{2}<br>'
+        '<span style="font-size:11px;color:var(--text2)">{3}</span>'
+        '</div>'
+        '</nav>'
+    ).format(links, sdot_cls, sdot_txt, cfg_txt)
 
 
 def page_wrap(page, bot_running, config_ok, title, content):
     nav = nav_html(page, bot_running, config_ok)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{0} - TGBackup</title><script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script><style>{1}</style></head><body>{2}<div class="main">{3}<div style="text-align:center;padding:16px;color:#444;font-size:10px;">Telegram Media Backup Bot &middot; {4}</div></div></body></html>'.format(title, CSS, nav, content, now_str)
+    return (
+        '<!DOCTYPE html><html lang="en">'
+        '<head>'
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>{0} - TGBackup</title>'
+        '<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>'
+        '<style>{1}</style>'
+        '</head>'
+        '<body>'
+        '{2}'
+        '<div class="main">'
+        '{3}'
+        '<div style="text-align:center;padding:20px;color:var(--text2);font-size:11px;">'
+        'Telegram Media Backup Bot &middot; {4}'
+        '</div>'
+        '</div>'
+        '</body></html>'
+    ).format(title, CSS, nav, content, now_str)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 def load_json(fp, default=None):
     try:
@@ -166,9 +509,90 @@ def fmt_logs(logs, limit=50):
     return r
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+def start_bot_process():
+    """Start the bot subprocess and return (success, error_msg)."""
+    global _bot_process, _bot_start_error
+
+    # Check if already running
+    if monitor.is_bot_running():
+        return True, "Bot is already running"
+
+    # Check required env vars
+    required_vars = ['BOT_TOKEN', 'BACKUP_GROUP_ID']
+    missing = [v for v in required_vars if not os.environ.get(v)]
+    if missing:
+        msg = "Missing env vars: " + ", ".join(missing)
+        _bot_start_error = msg
+        return False, msg
+
+    # Check bot script exists
+    if not os.path.exists('bot/telegram_bot.py'):
+        msg = "Bot script not found: bot/telegram_bot.py"
+        _bot_start_error = msg
+        return False, msg
+
+    try:
+        os.makedirs('bot', exist_ok=True)
+        log_file = open('bot/bot_output.log', 'a')
+        process = subprocess.Popen(
+            [sys.executable, 'bot/telegram_bot.py'],
+            cwd=os.getcwd(),
+            env=os.environ.copy(),
+            stdout=log_file,
+            stderr=subprocess.STDOUT
+        )
+
+        # Wait briefly to see if it crashes immediately
+        time.sleep(3)
+
+        if process.poll() is None:
+            _bot_process = process
+            _bot_start_error = ""
+            monitor.bot_process = process
+            monitor.start_time = datetime.now()
+            return True, "Bot started successfully"
+        else:
+            log_file.close()
+            msg = "Bot process crashed on startup. Check bot/bot_output.log for details."
+            try:
+                with open('bot/bot_output.log', 'r') as f:
+                    lines = f.readlines()
+                    last = lines[-10:] if lines else []
+                    if last:
+                        msg += "\n\nLast log lines:\n" + "".join(last)
+            except Exception:
+                pass
+            _bot_start_error = msg
+            return False, msg
+
+    except Exception as e:
+        msg = "Failed to start bot: " + str(e)
+        _bot_start_error = msg
+        return False, msg
+
+
+def stop_bot_process():
+    """Stop the bot subprocess."""
+    global _bot_process, _bot_start_error
+    try:
+        if _bot_process and _bot_process.poll() is None:
+            _bot_process.terminate()
+            try:
+                _bot_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                _bot_process.kill()
+                _bot_process.wait()
+        _bot_process = None
+        _bot_start_error = ""
+        return True
+    except Exception as e:
+        _bot_start_error = "Failed to stop bot: " + str(e)
+        return False
+
+
+# ============================================================================
 # ROUTES
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 @app.route('/')
 def dashboard():
@@ -186,24 +610,33 @@ def dashboard():
     if logs:
         log_table = '<table><tr><th>Time</th><th>Source</th><th>Type</th><th>Msg</th><th>OK</th></tr>{0}</table>'.format(rows)
     else:
-        log_table = '<p style="color:#666;text-align:center;padding:14px">No activity yet.</p>'
+        log_table = '<p style="color:var(--text2);text-align:center;padding:20px">No activity yet. Bot will appear here once it starts forwarding media.</p>'
 
+    # Bot status banner
     if bs['is_running']:
-        banner = '<div class="banner ok"><div class="dot green"></div><strong>Bot Running</strong>&nbsp;&nbsp;Uptime: {0} &nbsp;|&nbsp; PID: {1}</div><div class="btns"><form method="post" action="/bot/stop"><button class="btn btn-d" type="submit">Stop</button></form><form method="post" action="/bot/restart"><button class="btn btn-w" type="submit">Restart</button></form></div>'.format(bs.get('uptime', '?'), bs.get('process_id', '?'))
+        banner = (
+            '<div class="banner ok">'
+            '<div class="dot green"></div>'
+            '<strong>Bot Running</strong>&nbsp;&nbsp;'
+            'Uptime: {0} &nbsp;|&nbsp; PID: {1}'
+            '</div>'
+            '<div class="btns">'
+            '<form method="post" action="/bot/stop"><button class="btn btn-d" type="submit">Stop Bot</button></form>'
+            '<form method="post" action="/bot/restart"><button class="btn btn-w" type="submit">Restart Bot</button></form>'
+            '</div>'
+        ).format(bs.get('uptime', '?'), bs.get('process_id', '?'))
     else:
-        # Check for start error
-        error_msg = ''
-        try:
-            if os.path.exists('bot/bot_start_error.txt'):
-                with open('bot/bot_start_error.txt', 'r') as f:
-                    error_msg = f.read()
-        except Exception:
-            pass
         banner = '<div class="banner err"><div class="dot red"></div><strong>Bot Not Running</strong></div>'
-        if error_msg:
-            banner += '<div class="msg err">{0}</div>'.format(error_msg)
-        banner += '<div class="btns"><form method="post" action="/bot/start"><button class="btn btn-s" type="submit">Start Bot</button></form></div>'
+        # Show error if any
+        if _bot_start_error:
+            banner += '<div class="msg err">{0}</div>'.format(_bot_start_error)
+        banner += (
+            '<div class="btns">'
+            '<form method="post" action="/bot/start"><button class="btn btn-s" type="submit">Start Bot</button></form>'
+            '</div>'
+        )
 
+    # Config status
     token_cls = 'ok' if cs['has_token'] else 'err'
     gid_cls = 'ok' if cs['has_group_id'] else 'err'
     api_cls = 'ok' if cs['has_api_id'] else 'warn'
@@ -217,7 +650,7 @@ def dashboard():
     cfg_rows += '<div class="row"><span class="k">API_HASH</span><span class="v {0}">{1}</span></div>'.format(hash_cls, hash_icon)
     cfg_rows += '<div class="row"><span class="k">OWNER_ID</span><span class="v {0}">{1}</span></div>'.format(owner_cls, cs['owner_id'])
 
-    content = '<h1>Dashboard</h1><p class="sub">Real-time monitoring of your Telegram Media Backup Bot</p>'
+    content = '<div class="page-header"><h1>Dashboard</h1><p class="sub">Real-time monitoring of your Telegram Media Backup Bot</p></div>'
     content += banner
     content += '<div class="stats">'
     content += '<div class="stat"><div class="val">{0}</div><div class="lbl">Total Messages</div></div>'.format(stats['total_messages'])
@@ -225,8 +658,10 @@ def dashboard():
     content += '<div class="stat"><div class="val">{0}</div><div class="lbl">Today</div></div>'.format(stats['today_messages'])
     content += '<div class="stat"><div class="val">{0}</div><div class="lbl">Sources</div></div>'.format(stats['active_sources'])
     content += '</div>'
+    content += '<div class="grid2">'
     content += '<div class="card"><div class="card-head"><span>Config Status</span></div><div class="card-body">{0}</div></div>'.format(cfg_rows)
     content += '<div class="card"><div class="card-head"><span>Recent Activity</span></div><div class="card-body">{0}</div></div>'.format(log_table)
+    content += '</div>'
 
     return page_wrap('dashboard', bs['is_running'], cs['is_complete'], 'Dashboard', content)
 
@@ -239,15 +674,15 @@ def analytics_page():
     hourly = analytics.get_hourly_activity(24)
     media = analytics.get_media_types_distribution()
 
-    # Serialize data as JSON for JS to consume
+    # Serialize data as JSON for JS to consume (avoids f-string curly brace issues)
     daily_json = json.dumps(daily)
     hourly_json = json.dumps(hourly)
     media_json = json.dumps(media)
 
-    content = '<h1>Analytics</h1><p class="sub">Activity charts and media statistics</p>'
+    content = '<div class="page-header"><h1>Analytics</h1><p class="sub">Activity charts and media statistics</p></div>'
     content += '<div class="card"><div class="card-head"><span>Daily Activity (7 Days)</span></div><div class="card-body"><div class="cc"><canvas id="dailyChart"></canvas></div></div></div>'
     content += '<div class="card"><div class="card-head"><span>Hourly Activity (24h)</span></div><div class="card-body"><div class="cc"><canvas id="hourlyChart"></canvas></div></div></div>'
-    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+    content += '<div class="grid2">'
     content += '<div class="card"><div class="card-head"><span>Media Types</span></div><div class="card-body"><div class="cc"><canvas id="mediaChart"></canvas></div></div></div>'
     content += '<div class="card"><div class="card-head"><span>Summary</span></div><div class="card-body">'
     content += '<div class="row"><span class="k">Total</span><span class="v">{0}</span></div>'.format(stats['total_messages'])
@@ -256,7 +691,7 @@ def analytics_page():
     content += '<div class="row"><span class="k">Today</span><span class="v">{0}</span></div>'.format(stats['today_messages'])
     content += '</div></div></div>'
 
-    # JavaScript block - data passed via JSON, no f-string curly brace issues
+    # JavaScript block - data passed via JSON variables, no f-string curly brace issues
     content += '<script>\n'
     content += 'var dailyData = {0};\n'.format(daily_json)
     content += 'var hourlyData = {0};\n'.format(hourly_json)
@@ -269,7 +704,8 @@ new Chart(document.getElementById('dailyChart'), {
         datasets: [{
             label: 'Messages',
             data: dailyData.map(function(d){ return d.count; }),
-            backgroundColor: '#6c5ce7'
+            backgroundColor: '#58a6ff',
+            borderRadius: 4
         }]
     },
     options: {
@@ -277,8 +713,8 @@ new Chart(document.getElementById('dailyChart'), {
         maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-            y: { beginAtZero: true, ticks: { color: '#888' }, grid: { color: '#2a2a4a' } },
-            x: { ticks: { color: '#888' }, grid: { color: '#2a2a4a' } }
+            y: { beginAtZero: true, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
+            x: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' } }
         }
     }
 });
@@ -290,10 +726,11 @@ new Chart(document.getElementById('hourlyChart'), {
         datasets: [{
             label: 'Messages',
             data: hourlyData.map(function(h){ return h.count; }),
-            borderColor: '#40c057',
-            backgroundColor: 'rgba(64,192,87,.1)',
+            borderColor: '#3fb950',
+            backgroundColor: 'rgba(63,185,80,.1)',
             fill: true,
-            tension: 0.3
+            tension: 0.3,
+            pointRadius: 3
         }]
     },
     options: {
@@ -301,8 +738,8 @@ new Chart(document.getElementById('hourlyChart'), {
         maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-            y: { beginAtZero: true, ticks: { color: '#888' }, grid: { color: '#2a2a4a' } },
-            x: { ticks: { color: '#888' }, grid: { color: '#2a2a4a' } }
+            y: { beginAtZero: true, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
+            x: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' } }
         }
     }
 });
@@ -313,13 +750,13 @@ new Chart(document.getElementById('mediaChart'), {
         labels: Object.keys(mediaData),
         datasets: [{
             data: Object.values(mediaData),
-            backgroundColor: ['#6c5ce7','#40c057','#fab005','#e03131','#15aabf','#fd7e14','#be4bdb','#868e96']
+            backgroundColor: ['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#79c0ff','#ffa657','#8b949e']
         }]
     },
     options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { position: 'right', labels: { color: '#e0e0e0' } } }
+        plugins: { legend: { position: 'right', labels: { color: '#c9d1d9', padding: 12 } } }
     }
 });
 """
@@ -344,15 +781,15 @@ def topics_page():
 
         tl_rows = ''
         for i in timeline:
-            tl_rows += '<div class="row"><span>#{0}</span><span>{1}</span><span style="color:#888">{2}</span></div>'.format(i['thread_id'], i['topic'], i['last_updated_str'])
+            tl_rows += '<div class="row"><span>#{0}</span><span>{1}</span><span style="color:var(--text2)">{2}</span></div>'.format(i['thread_id'], i['topic'], i['last_updated_str'])
 
-        content = '<h1>Topics</h1><p class="sub">Source to thread mappings</p>'
-        content += '<div class="banner ok"><div class="dot green"></div><strong>{0} topics</strong></div>'.format(len(topics))
+        content = '<div class="page-header"><h1>Topics</h1><p class="sub">Source to thread mappings</p></div>'
+        content += '<div class="banner ok"><div class="dot green"></div><strong>{0} topics</strong> mapped</div>'.format(len(topics))
         content += '<div class="card"><div class="card-head"><span>Topic Map</span></div><div class="card-body">{0}</div></div>'.format(ttable)
         content += '<div class="card"><div class="card-head"><span>Timeline</span></div><div class="card-body">{0}</div></div>'.format(tl_rows)
     else:
-        content = '<h1>Topics</h1><p class="sub">No topics yet</p>'
-        content += '<div class="banner warn"><div class="dot yellow"></div>Add bot to source groups to start.</div>'
+        content = '<div class="page-header"><h1>Topics</h1><p class="sub">No topics yet</p></div>'
+        content += '<div class="banner warn"><div class="dot yellow"></div>Add bot to source groups to start creating topics automatically.</div>'
 
     return page_wrap('topics', bs['is_running'], cs['is_complete'], 'Topics', content)
 
@@ -370,10 +807,11 @@ def logs_page():
             rows += '<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>'.format(
                 l['ts'], l['source'], l['media_type'], l['message_id'], ok_icon
             )
-        content = '<h1>Activity Logs</h1><p class="sub">{0} recent entries</p>'.format(len(logs))
+        content = '<div class="page-header"><h1>Activity Logs</h1><p class="sub">{0} recent entries</p></div>'.format(len(logs))
         content += '<div class="card"><div class="card-body"><table><tr><th>Time</th><th>Source</th><th>Type</th><th>Msg</th><th>OK</th></tr>{0}</table></div></div>'.format(rows)
     else:
-        content = '<h1>Activity Logs</h1><div class="banner warn"><div class="dot yellow"></div>No logs yet.</div>'
+        content = '<div class="page-header"><h1>Activity Logs</h1></div>'
+        content += '<div class="banner warn"><div class="dot yellow"></div>No logs yet. Activity will appear here once the bot starts forwarding media.</div>'
 
     return page_wrap('logs', bs['is_running'], cs['is_complete'], 'Logs', content)
 
@@ -391,7 +829,7 @@ def config_page():
     owner_cls = 'ok' if cs['has_owner_id'] else 'warn'
     hash_icon = '&#10003;' if cs['has_api_hash'] else 'Not set'
 
-    content = '<h1>Configuration</h1><p class="sub">Bot settings and diagnostics</p>'
+    content = '<div class="page-header"><h1>Configuration</h1><p class="sub">Bot settings and diagnostics</p></div>'
 
     # Credentials
     content += '<div class="card"><div class="card-head"><span>Credentials</span></div><div class="card-body">'
@@ -445,7 +883,8 @@ def system_page():
     si = monitor.get_system_info()
 
     if not si:
-        content = '<h1>System</h1><div class="banner err"><div class="dot red"></div>Could not get system info.</div>'
+        content = '<div class="page-header"><h1>System</h1></div>'
+        content += '<div class="banner err"><div class="dot red"></div>Could not get system info.</div>'
         return page_wrap('system', bs['is_running'], cs['is_complete'], 'System', content)
 
     files_info = ''
@@ -460,8 +899,8 @@ def system_page():
     status_cls = 'ok' if bs['is_running'] else 'err'
     status_txt = 'Running' if bs['is_running'] else 'Stopped'
 
-    content = '<h1>System</h1><p class="sub">Resources and performance</p>'
-    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+    content = '<div class="page-header"><h1>System</h1><p class="sub">Resources and performance</p></div>'
+    content += '<div class="grid2">'
 
     # Resources card
     content += '<div class="card"><div class="card-head"><span>Resources</span></div><div class="card-body">'
@@ -514,12 +953,20 @@ def debug_page():
     if entries:
         etable = '<table><tr><th>Time</th><th>Event</th><th>Chat</th><th>ID</th><th>Detail</th></tr>{0}</table>'.format(entries)
     else:
-        etable = '<p style="color:#666;text-align:center;padding:14px">No events yet.</p>'
+        etable = '<p style="color:var(--text2);text-align:center;padding:20px">No debug events yet.</p>'
 
-    content = '<h1>Debug Log</h1><p class="sub">All bot events including skipped messages</p>'
+    content = '<div class="page-header"><h1>Debug Log</h1><p class="sub">All bot events including skipped messages</p></div>'
     content += '<div class="btns"><a href="/debug" class="btn btn-p">Refresh</a><form method="post" action="/debug/clear"><button class="btn btn-d" type="submit">Clear</button></form></div>'
     content += '<div class="card"><div class="card-body">{0}</div></div>'.format(etable)
-    content += '<div class="tip"><strong>Privacy Mode</strong><table><tr><th>Situation</th><th>Bot sees?</th></tr><tr><td>Regular member + Privacy ON</td><td>Only /commands</td></tr><tr><td>Regular member + Privacy OFF</td><td>All messages</td></tr><tr><td>Admin in group</td><td>All messages</td></tr><tr><td>In a channel</td><td>Always</td></tr></table><p style="margin-top:6px;color:#888">Check: @BotFather -> /mybots -> Bot Settings -> Group Privacy</p></div>'
+    content += (
+        '<div class="tip"><strong>Privacy Mode</strong>'
+        '<table><tr><th>Situation</th><th>Bot sees?</th></tr>'
+        '<tr><td>Regular member + Privacy ON</td><td>Only /commands</td></tr>'
+        '<tr><td>Regular member + Privacy OFF</td><td>All messages</td></tr>'
+        '<tr><td>Admin in group</td><td>All messages</td></tr>'
+        '<tr><td>In a channel</td><td>Always</td></tr></table>'
+        '<p style="margin-top:8px;color:var(--text2)">Check: @BotFather -> /mybots -> Bot Settings -> Group Privacy</p></div>'
+    )
 
     return page_wrap('debug', bs['is_running'], cs['is_complete'], 'Debug', content)
 
@@ -586,21 +1033,21 @@ def copy_page():
             log_html = ''
             for l in log_lines[-50:]:
                 log_html += '<div>{0}</div>'.format(l)
-            prog_html += '<h2>Live Log</h2><div style="background:var(--bg);border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:10px">{0}</div>'.format(log_html)
+            prog_html += '<h2 style="margin-top:12px">Live Log</h2><div style="background:var(--bg);border-radius:6px;padding:10px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:11px">{0}</div>'.format(log_html)
 
         if progress.get('status') == 'finished':
-            prog_html += '<div class="banner ok" style="margin-top:10px"><div class="dot green"></div>Done!</div>'
+            prog_html += '<div class="banner ok" style="margin-top:12px"><div class="dot green"></div>Done!</div>'
         elif progress.get('status') == 'error':
-            prog_html += '<div class="banner err" style="margin-top:10px"><div class="dot red"></div>Error &mdash; check log.</div>'
+            prog_html += '<div class="banner err" style="margin-top:12px"><div class="dot red"></div>Error &mdash; check log.</div>'
     else:
-        prog_html = '<p style="color:#666;text-align:center;padding:14px">No scraper job yet.</p>'
+        prog_html = '<p style="color:var(--text2);text-align:center;padding:20px">No scraper job yet. Fill in the form below to start copying.</p>'
 
     stop_btn = ''
     if is_running:
         stop_btn = '<form method="post" action="/copy/stop"><button class="btn btn-d" type="submit">Stop Scraper</button></form>'
 
-    content = '<h1>Copy History</h1><p class="sub">Copy old media from any Telegram chat to your backup supergroup</p>'
-    content += '<div class="banner info"><div class="dot" style="background:var(--accent)"></div>Uses <strong>API_ID + API_HASH</strong> (MTProto). Bot must be member/admin of source chat.<br>Forum supergroups: each source topic mapped automatically.</div>'
+    content = '<div class="page-header"><h1>Copy History</h1><p class="sub">Copy old media from any Telegram chat to your backup supergroup</p></div>'
+    content += '<div class="banner info"><div class="dot blue"></div>Uses <strong>API_ID + API_HASH</strong> (MTProto). Bot must be member/admin of source chat.<br>Forum supergroups: each source topic mapped automatically.</div>'
 
     content += '<div class="card"><div class="card-head"><span>Settings</span></div><div class="card-body">'
     content += '<form method="post" action="/copy/start">'
@@ -611,11 +1058,17 @@ def copy_page():
     content += '<button class="btn btn-s" type="submit" {0}>Start Copying</button></form></div></div>'.format(disabled)
 
     content += '<div class="btns">{0}</div>'.format(stop_btn)
-    content += '<div class="card"><div class="card-head"><span>Progress</span> <a href="/copy" class="btn btn-p" style="padding:3px 8px;font-size:10px">Refresh</a></div><div class="card-body">{0}</div></div>'.format(prog_html)
+    content += '<div class="card"><div class="card-head"><span>Progress</span> <a href="/copy" class="btn btn-o" style="padding:4px 10px;font-size:11px">Refresh</a></div><div class="card-body">{0}</div></div>'.format(prog_html)
 
-    content += '<div class="tip"><strong>Tips</strong><table><tr><th>Source</th><th>Enter as</th></tr><tr><td>Public channel</td><td>@username</td></tr><tr><td>Private group</td><td>-1001234567890</td></tr><tr><td>Forum supergroup</td><td>Same &mdash; auto-detected</td></tr></table>'
-    content += '<p style="margin-top:6px;color:#888">Use delay 3-5s. Bot needs Admin + Manage Topics in backup group.</p>'
-    content += '<p style="margin-top:6px;color:#fab005"><strong>Important:</strong> For private chats, you need STRING_SESSION env var. Bot-token auth only works for public chats. See the scraper log for setup instructions.</p></div>'
+    content += (
+        '<div class="tip"><strong>Tips</strong>'
+        '<table><tr><th>Source</th><th>Enter as</th></tr>'
+        '<tr><td>Public channel</td><td>@username</td></tr>'
+        '<tr><td>Private group</td><td>-1001234567890</td></tr>'
+        '<tr><td>Forum supergroup</td><td>Same &mdash; auto-detected</td></tr></table>'
+        '<p style="margin-top:8px;color:var(--text2)">Use delay 3-5s. Bot needs Admin + Manage Topics in backup group.</p>'
+        '<p style="margin-top:6px;color:var(--yellow)"><strong>Important:</strong> For private chats, you need STRING_SESSION env var. Bot-token auth only works for public chats.</p></div>'
+    )
 
     return page_wrap('copy', bs['is_running'], cs['is_complete'], 'Copy', content)
 
@@ -662,32 +1115,21 @@ def copy_stop():
     return redirect('/copy')
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# BOT CONTROL
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# BOT CONTROL - Fixed Start/Stop/Restart
+# ============================================================================
 
 @app.route('/bot/start', methods=['POST'])
 def bot_start():
-    success = monitor.start_bot()
-    if not success:
-        # Store error message in a temp file so dashboard can show it
-        try:
-            with open('bot/bot_start_error.txt', 'w') as f:
-                f.write('Bot failed to start. Check: 1) BOT_TOKEN is valid, 2) BACKUP_GROUP_ID is set, 3) Bot is admin in the backup group.')
-        except Exception:
-            pass
-    else:
-        try:
-            if os.path.exists('bot/bot_start_error.txt'):
-                os.remove('bot/bot_start_error.txt')
-        except Exception:
-            pass
+    success, msg = start_bot_process()
     time.sleep(2)
-    return redirect(request.referrer or '/')
+    return redirect(request.referrer or '/'  )
 
 
 @app.route('/bot/stop', methods=['POST'])
 def bot_stop():
+    stop_bot_process()
+    # Also try via monitor
     monitor.stop_bot()
     time.sleep(1)
     return redirect(request.referrer or '/')
@@ -695,14 +1137,17 @@ def bot_stop():
 
 @app.route('/bot/restart', methods=['POST'])
 def bot_restart():
-    monitor.restart_bot()
+    stop_bot_process()
+    monitor.stop_bot()
+    time.sleep(2)
+    start_bot_process()
     time.sleep(2)
     return redirect(request.referrer or '/')
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# HEALTH CHECK
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
 
 @app.route('/health')
 def health():
@@ -728,38 +1173,38 @@ def bot_log():
 
 
 @app.route('/api/bot-start-error')
-def bot_start_error():
+def bot_start_error_api():
     """Return any bot start error message."""
-    try:
-        if os.path.exists('bot/bot_start_error.txt'):
-            with open('bot/bot_start_error.txt', 'r') as f:
-                return jsonify({'error': f.read()})
-    except Exception:
-        pass
-    return jsonify({'error': ''})
+    return jsonify({'error': _bot_start_error})
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# START BOT AUTOMATICALLY IN BACKGROUND
-# ══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/stats')
+def api_stats():
+    """Return stats as JSON."""
+    return jsonify(analytics.get_summary_stats())
+
+
+# ============================================================================
+# AUTO-START BOT IN BACKGROUND
+# ============================================================================
 
 def auto_start_bot():
     """Auto-start the Telegram bot when the web server starts."""
     time.sleep(3)  # Wait for Flask to be ready
     if config_mgr.is_fully_configured():
         print("Auto-starting Telegram bot...")
-        success = monitor.start_bot()
+        success, msg = start_bot_process()
         if success:
             print("Bot auto-started successfully!")
         else:
-            print("Bot auto-start failed. Check configuration.")
+            print("Bot auto-start failed: " + msg)
     else:
-        print("Bot not configured. Set BOT_TOKEN and BACKUP_GROUP_ID.")
+        print("Bot not fully configured. Set BOT_TOKEN and BACKUP_GROUP_ID env vars.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # MAIN
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
@@ -768,5 +1213,5 @@ if __name__ == '__main__':
     bot_thread = threading.Thread(target=auto_start_bot, daemon=True)
     bot_thread.start()
 
-    print("Flask dashboard on port {0}...".format(port))
+    print("Flask dashboard starting on port {0}...".format(port))
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
