@@ -205,7 +205,31 @@ async def scrape(
 ):
     api_id    = int(os.environ["API_ID"])
     api_hash  = os.environ["API_HASH"]
-    bot_token = os.environ["BOT_TOKEN"]
+    bot_token = os.environ.get("BOT_TOKEN", "")
+
+    # ── Choose auth mode ───────────────────────────────────────────────────
+    # If a user session file exists, prefer it (can access private chats).
+    # Otherwise fall back to bot_token auth.
+    SESSION_NAME = "scraper_session"
+    session_file = f"{SESSION_NAME}.session"
+    use_bot_auth = True
+
+    # Check if a user-account session exists (more powerful than bot auth)
+    if os.path.exists(session_file):
+        # Verify it's a real session file (not just a bot session)
+        try:
+            file_size = os.path.getsize(session_file)
+            if file_size > 1024:  # User sessions are typically larger
+                use_bot_auth = False
+                logger.info(f"Found existing user session ({file_size} bytes) — using user auth")
+        except Exception:
+            pass
+
+    # If STRING_SESSION is provided (Telethon/PYROGRAM string session), use it
+    string_session = os.environ.get("STRING_SESSION", "")
+    if string_session:
+        use_bot_auth = False
+        logger.info("STRING_SESSION found — using user string session auth")
 
     progress = {
         "status": "starting",
@@ -233,13 +257,26 @@ async def scrape(
 
     write_progress(progress)
 
-    async with Client(
-        "scraper_session",
-        api_id=api_id,
-        api_hash=api_hash,
-        bot_token=bot_token,
-        workdir=os.getcwd(),
-    ) as app:
+    # ── Build Pyrogram client with appropriate auth ────────────────────────
+    client_kwargs = {
+        "name": SESSION_NAME,
+        "api_id": api_id,
+        "api_hash": api_hash,
+        "workdir": os.getcwd(),
+    }
+
+    if use_bot_auth and bot_token:
+        client_kwargs["bot_token"] = bot_token
+        logger.info("Using BOT TOKEN auth for scraper")
+    elif string_session:
+        # Pyrogram string session — can access all chats the user can
+        client_kwargs["session_string"] = string_session
+        logger.info("Using STRING_SESSION (user account) auth for scraper")
+    else:
+        # No bot token, no string session — try bare user session file
+        logger.info("Using existing session file auth for scraper")
+
+    async with Client(**client_kwargs) as app:
 
         progress["status"] = "running"
 
@@ -254,7 +291,16 @@ async def scrape(
             progress["status"] = "error"
             progress["finished_at"] = datetime.now().isoformat()
             add_log(f"ERROR: Cannot access '{source_chat}': {e}")
-            add_log("Make sure the bot is a member or admin of that chat, or it is a public chat.")
+            if use_bot_auth:
+                add_log("Bot-token auth has limited access to private chats.")
+                add_log("FIX: Set STRING_SESSION env var with your user-account session.")
+                add_log("   1. Run: pip install pyrogram tgcrypto")
+                add_log("   2. Run: python -c \"from pyrogram import Client; Client('my', api_id=API_ID, api_hash='API_HASH').run()\"")
+                add_log("   3. Log in with your phone number")
+                add_log("   4. Export: python -c \"from pyrogram import Client; app=Client('my',api_id=X,api_hash='Y'); app.connect(); print(app.export_session_string())\"")
+                add_log("   5. Set STRING_SESSION=<that string> in Heroku env vars")
+            else:
+                add_log("Make sure the user account is a member of that chat.")
             write_progress(progress)
             return
         except Exception as e:
