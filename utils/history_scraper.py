@@ -22,6 +22,7 @@ from pyrogram import Client
 from pyrogram.errors import (
     FloodWait, ChatAdminRequired, ChannelPrivate,
     UsernameNotOccupied, PeerIdInvalid, UserNotParticipant,
+    ChatWriteForbidden, ChatSendMediaForbidden,
 )
 
 logging.basicConfig(
@@ -290,17 +291,34 @@ async def scrape(
         except (UsernameNotOccupied, PeerIdInvalid, ChannelPrivate, UserNotParticipant) as e:
             progress["status"] = "error"
             progress["finished_at"] = datetime.now().isoformat()
-            add_log(f"ERROR: Cannot access '{source_chat}': {e}")
-            if use_bot_auth:
-                add_log("Bot-token auth has limited access to private chats.")
-                add_log("FIX: Set STRING_SESSION env var with your user-account session.")
-                add_log("   1. Run: pip install pyrogram tgcrypto")
-                add_log("   2. Run: python -c \"from pyrogram import Client; Client('my', api_id=API_ID, api_hash='API_HASH').run()\"")
-                add_log("   3. Log in with your phone number")
-                add_log("   4. Export: python -c \"from pyrogram import Client; app=Client('my',api_id=X,api_hash='Y'); app.connect(); print(app.export_session_string())\"")
-                add_log("   5. Set STRING_SESSION=<that string> in Heroku env vars")
+            err_name = type(e).__name__
+            add_log(f"ERROR: Cannot access '{source_chat}': {err_name}: {e}")
+            # Provide specific guidance based on the error type
+            if isinstance(e, ChannelPrivate):
+                add_log("The source chat is PRIVATE. Bot-token auth CANNOT access private chats.")
+                add_log("SOLUTION: You need STRING_SESSION (user-account auth).")
+                add_log("Steps to get STRING_SESSION:")
+                add_log("  1. Install pyrogram: pip install pyrogram tgcrypto")
+                add_log("  2. Run locally: python -c \"from pyrogram import Client; Client('my', api_id=YOUR_API_ID, api_hash='YOUR_API_HASH').run()\"")
+                add_log("  3. Log in with your phone number")
+                add_log("  4. Export session: python -c \"from pyrogram import Client; app=Client('my',api_id=X,api_hash='Y'); app.connect(); print(app.export_session_string())\"")
+                add_log("  5. Set STRING_SESSION=<exported_string> as Heroku env var")
+            elif isinstance(e, UserNotParticipant):
+                add_log("The bot/user is NOT a member of the source chat.")
+                add_log("SOLUTION: Add the bot to the source group/channel first.")
+                if use_bot_auth:
+                    add_log("For private chats, you also need STRING_SESSION env var.")
+            elif isinstance(e, PeerIdInvalid):
+                add_log("Invalid chat ID. Make sure the ID is correct.")
+                add_log("Use @userinfobot or /id command to get the correct chat ID.")
+                if use_bot_auth:
+                    add_log("Bot-token auth may not see private chats. Try STRING_SESSION.")
             else:
-                add_log("Make sure the user account is a member of that chat.")
+                if use_bot_auth:
+                    add_log("Bot-token auth has limited access to private chats.")
+                    add_log("FIX: Set STRING_SESSION env var with your user-account session.")
+                else:
+                    add_log("Make sure the user account is a member of that chat.")
             write_progress(progress)
             return
         except Exception as e:
@@ -410,7 +428,15 @@ async def scrape(
                             except ChatAdminRequired:
                                 progress["status"] = "error"
                                 progress["finished_at"] = datetime.now().isoformat()
-                                add_log("ERROR: Bot needs Admin + Manage Topics in backup group.")
+                                add_log("ERROR: ChatAdminRequired - Bot needs Admin + Manage Topics in the BACKUP group.")
+                                add_log("FIX: Go to backup supergroup -> Edit -> Administrators -> Add bot -> Enable 'Manage Topics'")
+                                write_progress(progress)
+                                return
+                            except (ChatWriteForbidden, ChatSendMediaForbidden) as e:
+                                progress["status"] = "error"
+                                progress["finished_at"] = datetime.now().isoformat()
+                                add_log(f"ERROR: {type(e).__name__} - Bot cannot send media to the backup group.")
+                                add_log("FIX: Make bot an admin in the backup group with proper permissions.")
                                 write_progress(progress)
                                 return
 
@@ -479,12 +505,26 @@ async def scrape(
                     except ChatAdminRequired:
                         progress["status"] = "error"
                         progress["finished_at"] = datetime.now().isoformat()
-                        add_log("ERROR: Bot needs Admin + Manage Topics in backup group.")
+                        add_log("ERROR: ChatAdminRequired - Bot needs Admin + Manage Topics in the BACKUP group.")
+                        add_log("FIX: Go to backup supergroup -> Edit -> Administrators -> Add bot -> Enable 'Manage Topics'")
+                        write_progress(progress)
+                        return
+                    except (ChatWriteForbidden, ChatSendMediaForbidden) as e:
+                        progress["status"] = "error"
+                        progress["finished_at"] = datetime.now().isoformat()
+                        add_log(f"ERROR: {type(e).__name__} - Bot cannot send media to the backup group.")
+                        add_log("FIX: Make bot an admin in the backup group with proper permissions.")
                         write_progress(progress)
                         return
                     except Exception as e:
                         progress["errors"] += 1
-                        add_log(f"Error on msg #{message.id}: {e}")
+                        err_name = type(e).__name__
+                        if 'admin' in str(e).lower() or 'public' in str(e).lower() or 'forbidden' in str(e).lower():
+                            add_log(f"ERROR on msg #{message.id}: {err_name}: {e}")
+                            if use_bot_auth:
+                                add_log("This often means bot-token auth cannot access this chat. Try STRING_SESSION.")
+                        else:
+                            add_log(f"Error on msg #{message.id}: {err_name}: {e}")
                         log_activity(chat_name, mtype, message.id, "failed")
                         write_progress(progress)
 
