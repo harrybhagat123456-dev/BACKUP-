@@ -35,11 +35,14 @@ OWNER_ID_STR         = os.getenv('OWNER_ID', '')
 
 # Validate and convert BACKUP_GROUP_ID
 if not BACKUP_GROUP_ID_STR:
-    raise ValueError("BACKUP_GROUP_ID not set!")
-try:
-    BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_STR)
-except ValueError:
-    raise ValueError(f"Invalid BACKUP_GROUP_ID: {BACKUP_GROUP_ID_STR}")
+    logger.warning("BACKUP_GROUP_ID not set! Bot will not start until it is configured.")
+    BACKUP_GROUP_ID = None
+else:
+    try:
+        BACKUP_GROUP_ID = int(BACKUP_GROUP_ID_STR)
+    except ValueError:
+        logger.error(f"Invalid BACKUP_GROUP_ID: {BACKUP_GROUP_ID_STR}")
+        BACKUP_GROUP_ID = None
 
 OWNER_ID = int(OWNER_ID_STR) if OWNER_ID_STR.lstrip('-').isdigit() else None
 
@@ -897,8 +900,10 @@ def main():
     """Main function to start the bot"""
     try:
         if not BOT_TOKEN:
-            print("❌ ERROR: BOT_TOKEN not set!")
-            print("Set the BOT_TOKEN environment variable with your bot token.")
+            logger.error("BOT_TOKEN not set! Set the BOT_TOKEN environment variable.")
+            return
+        if not BACKUP_GROUP_ID:
+            logger.error("BACKUP_GROUP_ID not set or invalid! Set the BACKUP_GROUP_ID environment variable.")
             return
         bot = TelegramBackupBot()
         bot.start_polling()

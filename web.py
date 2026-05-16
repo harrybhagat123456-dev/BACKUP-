@@ -191,7 +191,18 @@ def dashboard():
     if bs['is_running']:
         banner = '<div class="banner ok"><div class="dot green"></div><strong>Bot Running</strong>&nbsp;&nbsp;Uptime: {0} &nbsp;|&nbsp; PID: {1}</div><div class="btns"><form method="post" action="/bot/stop"><button class="btn btn-d" type="submit">Stop</button></form><form method="post" action="/bot/restart"><button class="btn btn-w" type="submit">Restart</button></form></div>'.format(bs.get('uptime', '?'), bs.get('process_id', '?'))
     else:
-        banner = '<div class="banner err"><div class="dot red"></div><strong>Bot Not Running</strong></div><div class="btns"><form method="post" action="/bot/start"><button class="btn btn-s" type="submit">Start</button></form></div>'
+        # Check for start error
+        error_msg = ''
+        try:
+            if os.path.exists('bot/bot_start_error.txt'):
+                with open('bot/bot_start_error.txt', 'r') as f:
+                    error_msg = f.read()
+        except Exception:
+            pass
+        banner = '<div class="banner err"><div class="dot red"></div><strong>Bot Not Running</strong></div>'
+        if error_msg:
+            banner += '<div class="msg err">{0}</div>'.format(error_msg)
+        banner += '<div class="btns"><form method="post" action="/bot/start"><button class="btn btn-s" type="submit">Start Bot</button></form></div>'
 
     token_cls = 'ok' if cs['has_token'] else 'err'
     gid_cls = 'ok' if cs['has_group_id'] else 'err'
@@ -657,7 +668,20 @@ def copy_stop():
 
 @app.route('/bot/start', methods=['POST'])
 def bot_start():
-    monitor.start_bot()
+    success = monitor.start_bot()
+    if not success:
+        # Store error message in a temp file so dashboard can show it
+        try:
+            with open('bot/bot_start_error.txt', 'w') as f:
+                f.write('Bot failed to start. Check: 1) BOT_TOKEN is valid, 2) BACKUP_GROUP_ID is set, 3) Bot is admin in the backup group.')
+        except Exception:
+            pass
+    else:
+        try:
+            if os.path.exists('bot/bot_start_error.txt'):
+                os.remove('bot/bot_start_error.txt')
+        except Exception:
+            pass
     time.sleep(2)
     return redirect(request.referrer or '/')
 
@@ -688,6 +712,31 @@ def health():
         'bot_running': bs['is_running'],
         'timestamp': datetime.now().isoformat()
     })
+
+
+@app.route('/api/bot-log')
+def bot_log():
+    """Return the last N lines of bot output log."""
+    try:
+        if os.path.exists('bot/bot_output.log'):
+            with open('bot/bot_output.log', 'r') as f:
+                lines = f.readlines()
+            return jsonify({'log': lines[-50:]})
+    except Exception:
+        pass
+    return jsonify({'log': []})
+
+
+@app.route('/api/bot-start-error')
+def bot_start_error():
+    """Return any bot start error message."""
+    try:
+        if os.path.exists('bot/bot_start_error.txt'):
+            with open('bot/bot_start_error.txt', 'r') as f:
+                return jsonify({'error': f.read()})
+    except Exception:
+        pass
+    return jsonify({'error': ''})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

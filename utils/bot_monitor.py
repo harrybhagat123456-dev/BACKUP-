@@ -108,6 +108,13 @@ class BotMonitor:
                 print(f"Bot script not found at {self.bot_script_path}")
                 return False
             
+            # Check required environment variables before starting
+            required_vars = ['BOT_TOKEN', 'BACKUP_GROUP_ID']
+            missing = [v for v in required_vars if not os.environ.get(v)]
+            if missing:
+                print(f"Missing required env vars: {', '.join(missing)}")
+                return False
+            
             # Start the bot process using the same Python interpreter as the current process
             os.makedirs('bot', exist_ok=True)
             log_file = open('bot/bot_output.log', 'a')
@@ -116,16 +123,27 @@ class BotMonitor:
                 cwd=os.getcwd(),
                 env=os.environ.copy(),
                 stdout=log_file,
-                stderr=log_file
+                stderr=subprocess.STDOUT  # Merge stderr into stdout
             )
             
             # Wait a moment to check if it started successfully
-            time.sleep(2)
+            time.sleep(3)
             
             if process.poll() is None:  # Process is still running
                 self.start_time = datetime.now()
+                self.bot_process = process
                 return True
             else:
+                # Bot crashed - read the log to find out why
+                log_file.close()
+                try:
+                    with open('bot/bot_output.log', 'r') as f:
+                        lines = f.readlines()
+                        last_lines = lines[-20:] if lines else []
+                        error_msg = ''.join(last_lines)
+                        print(f"Bot crashed on startup. Last log output:\n{error_msg}")
+                except Exception:
+                    pass
                 return False
                 
         except Exception as e:
